@@ -1,4 +1,4 @@
-import  { useState, useMemo } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -20,7 +20,6 @@ type Token = { type: TokenType; value: string; pos: number };
 const isIdentifierStart = (ch: string) => ch === "_" || (ch >= "a" && ch <= "z");
 const isAlpha = (ch: string) => (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z");
 const isDigit = (ch: string) => ch >= "0" && ch <= "9";
-const isHexChar = (ch: string) => (ch >= "0" && ch <= "9") || (ch >= "a" && ch <= "f");
 
 // --- Простейший лексер, возвращающий токены одной строки (без терминатора ;) ) ---
 function tokenizeLine(line: string, basePos = 0): Token[] {
@@ -243,7 +242,7 @@ function processProgram(text: string) {
   // Если в конце нет завершающего ';', считаем это ошибкой для последней незавершённой строки
   if (current.trim().length > 0) {
     const statementRaw = current.trim();
-    const res = processStatement(statementRaw, vars, true);
+    const res = processStatement(statementRaw, vars);
     results.push({ raw: statementRaw + (res.ok ? ";" : ""), status: res.ok ? "accepted" : "cancel", message: res.ok ? undefined : res.err });
   }
 
@@ -251,7 +250,7 @@ function processProgram(text: string) {
 }
 
 // processStatement: анализ токенов одной логической части (без завершающего ';')
-function processStatement(statement: string, vars: Record<string, number>, missingSemicolonAllowed = false) {
+function processStatement(statement: string, vars: Record<string, number>) {
   // Если комментарий (начинается с //) — автоматически принимаем
   const trimmed = statement.trim();
   if (trimmed.startsWith("//")) {
@@ -336,70 +335,6 @@ function processStatement(statement: string, vars: Record<string, number>, missi
 // --- Компоненты UI ---
 
 function HighlightedEditor({ text, onChange }: { text: string; onChange: (v: string) => void }) {
-  // Простейшая "подсветка": разбиваем по точкам с запятой и токенам и инжектируем span-ы
-  const highlighted = useMemo(() => {
-    // Простая реализация: пройдём по всем символам и составим HTML с <span className=\\"tk-...\\">\n
-    // Разделим вход на термины, сохраняя ';'
-    const parts: string[] = [];
-    let cur = "";
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i];
-      cur += ch;
-      if (ch === ";") {
-        parts.push(cur);
-        cur = "";
-      }
-    }
-    if (cur.length) parts.push(cur);
-
-    // Для каждой части создаём подсветку
-    const htmlParts = parts.map((part) => {
-      const raw = part;
-      const trimmed = raw.trimStart();
-      // комментарий
-      if (trimmed.startsWith("//")) {
-        return `<span class=\\"tk-comment\\">${escapeHtml(raw)}</span>`;
-      }
-      // иначе токенизируем
-      const tokens = tokenizeLine(raw);
-      let s = "";
-      let lastPos = 0;
-      for (const tk of tokens) {
-        // добавим промежутки из оригинала
-        const start = tk.pos - 0; // pos уже относительный для этой части
-        // (в упрощенной реализации мы не используем точные позиции)
-        const v = escapeHtml(tk.value);
-        switch (tk.type) {
-          case "identifier":
-            s += `<span class=\\"tk-id\\">${v}</span>`;
-            break;
-          case "hex":
-            s += `<span class=\\"tk-hex\\">${v}</span>`;
-            break;
-          case "op":
-            s += `<span class=\\"tk-op\\">${v}</span>`;
-            break;
-          case "assign":
-            s += `<span class=\\"tk-assign\\">${v}</span>`;
-            break;
-          case "lparen":
-          case "rparen":
-            s += `<span class=\\"tk-par\\">${v}</span>`;
-            break;
-          case "comment":
-            s += `<span class=\\"tk-comment\\">${v}</span>`;
-            break;
-          default:
-            s += `<span class=\\"tk-err\\">${v}</span>`;
-            break;
-        }
-      }
-      return s;
-    });
-
-    return htmlParts.join("");
-  }, [text]);
-
   return (
     <div className="w-full h-full flex flex-col">
       {/* собственно textarea для ввода */}
@@ -409,14 +344,8 @@ function HighlightedEditor({ text, onChange }: { text: string; onChange: (v: str
         className="w-full h-64 p-2 font-mono bg-transparent resize-none outline-none text-sm"
         spellCheck={false}
       />
-
-      
     </div>
   );
-}
-
-function escapeHtml(s: string) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 export default function App() {
