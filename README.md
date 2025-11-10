@@ -43,3 +43,205 @@ npm run dev
 ```bash
 npm run build
 ```
+
+## Документация
+
+### Обзор
+
+- Вход: произвольный текст, содержащий операторы, разделённые `;`
+- Цель: для каждой логической строки выставить статус
+  - accepted — строка синтаксически корректна
+  - cancel — найдена ошибка (сообщение указывает причину)
+
+Для этого используются:
+- Вспомогательные предикаты для классификации символов
+- Токенайзер `tokenizeLine(...)` для преобразования строки в токены
+- Валидатор `validateExpressionTokens(...)` для проверки корректности выражения
+- Анализ строки `processStatement(...)`
+- Анализ всего текста `processProgram(...)`
+
+---
+
+### Вспомогательные предикаты
+
+- `isIdentifierStart(ch: string)` — проверка, может ли символ начинать идентификатор (`_` или строчная латинская буква).
+- `isAlpha(ch: string)` — проверка, является ли символ буквой (латиница в любом регистре).
+- `isDigit(ch: string)` — проверка, является ли символ цифрой `0-9`.
+
+Эти функции используются токенайзером, чтобы распознать идентификаторы и числа.
+
+---
+
+### Токенайзер: `tokenizeLine(line: string, basePos = 0): Token[]`
+
+Назначение: превратить сырую строку в поток токенов:
+- `identifier` — идентификаторы (`_` или строчная буква, затем буквы/цифры/`_`)
+- `hex` — шестнадцатеричные числа (начинаются с цифры, далее `0-9`/`a-f`)
+- `op` — операторы `+ - * /`
+- `assign` — оператор присваивания `:=`
+- `lparen` / `rparen` — скобки `(`, `)`
+- `comment` — остаток строки, если встречено `//` (до конца строки)
+- `unknown` — любой непризнанный символ
+
+Ключевые правила:
+- Пробельные символы пропускаются.
+- `//` преобразуется в один токен `comment` и обрывает дальнейшую обработку строки.
+- `:` без `=` после — это `unknown`.
+
+Примеры:
+
+```ts
+tokenizeLine("abc := 1a + 2f")
+// [
+//   { type: "identifier", value: "abc" },
+//   { type: "assign", value: ":=" },
+//   { type: "hex", value: "1a" },
+//   { type: "op", value: "+" },
+//   { type: "hex", value: "2f" }
+// ]
+
+tokenizeLine("// comment here")
+// [{ type: "comment", value: "// comment here" }]
+```
+
+---
+
+### Валидатор выражений: `validateExpressionTokens(tokens: Token[])`
+
+Назначение: проверить, что токены образуют корректное арифметическое выражение без вычислений.
+
+Проверяет:
+- отсутствуют `unknown` и `comment` внутри выражения;
+- корректность литералов `hex` — соответствуют `^[0-9][0-9a-f]*$`;
+- корректность идентификаторов — не начинаются с заглавной буквы;
+- порядок токенов: операнд/`(` → оператор/`)` → операнд/`(` ...;
+- баланс скобок;
+- выражение не пустое и не заканчивается оператором.
+
+Примеры:
+
+```ts
+validateExpressionTokens(tokenizeLine("1a + 2f")) // { ok: true }
+validateExpressionTokens(tokenizeLine("(a + 1) * b")) // { ok: true }
+validateExpressionTokens(tokenizeLine("A + 1")) // { ok: false, err: "Identifier 'A' cannot start with uppercase letter" }
+validateExpressionTokens(tokenizeLine("1a +")) // { ok: false, err: "Expression is incomplete" }
+validateExpressionTokens(tokenizeLine("1g")) // { ok: false, err: "Invalid hex literal '1g'" }
+validateExpressionTokens(tokenizeLine("a ) b")) // { ok: false, err: "Unexpected token ')'" }
+```
+
+Примечание: функция не знает о значениях переменных и не проверяет их наличие — только синтаксис.
+
+---
+
+### Анализ одной строки: `processStatement(statement: string)`
+
+Назначение: выставить статус для одной логической строки (без завершающего `;`). Поддерживает:
+- Комментарии: если строка начинается с `//` — статус `accepted` (комментарий валиден).
+- Присваивание: `left := right`
+  - `left` должен быть валидным идентификатором (и не начинаться с заглавной).
+  - `right` должен быть корректным выражением по `validateExpressionTokens(...)`.
+- Выражение без присваивания: проверяется так же `validateExpressionTokens(...)`.
+
+Возвращает объект вида:
+
+```ts
+{ ok: true } // если всё корректно
+{ ok: false, err: "сообщение об ошибке" } // если найдена ошибка
+```
+
+Примеры:
+
+```ts
+processStatement("abc := 1a + 2f") // { ok: true }
+processStatement("// just a comment") // { ok: true }
+processStatement("A := 1a") // { ok: false, err: "Identifier 'A' cannot start with uppercase letter" }
+processStatement("x := 1z") // { ok: false, err: "Invalid hex literal '1z'" }
+processStatement("a +") // { ok: false, err: "Expression is incomplete" }
+```
+
+---
+
+### Анализ всего текста: `processProgram(text: string)`
+
+Назначение: разбить входной текст на логические фрагменты по `;` и вызвать `processStatement(...)` для каждого. Для незавершённой последней строки (без `;`) статус вычисляется так же.
+
+Возвращаемое значение:
+
+```ts
+{
+  results: Array<{
+    raw: string; // исходный фрагмент (с добавленной ';' у принятых или без — у отклонённых)
+    status: "accepted" | "cancel";
+    message?: string; // текст ошибки для cancel или предупреждения
+  }>
+}
+```
+
+Пример:
+
+```ts
+processProgram("abc := 1a + 2f; // ok;\nA := 1a; x := (a + 1;")
+// {
+//   results: [
+//     { raw: "abc := 1a + 2f;", status: "accepted" },
+//     { raw: "// ok;", status: "accepted" },
+//     { raw: "A := 1a", status: "cancel", message: "Identifier 'A' cannot start with uppercase letter" },
+//     { raw: "x := (a + 1", status: "cancel", message: "Missing closing parenthesis" }
+//   ]
+// }
+```
+
+---
+
+### Набор лексем языка
+
+- Идентификаторы: `identifier` — `_` или строчная латинская буква, затем `A-Za-z0-9_` (но проверка валидности идентификаторов в выражении запрещает заглавную первую букву).
+- Hex-числа: `hex` — `^[0-9][0-9a-f]*$`.
+- Операторы: `op` — `+ - * /`.
+- Присваивание: `assign` — `:=`.
+- Скобки: `lparen`, `rparen` — `(`, `)`.
+- Комментарии: `comment` — начинается с `//` и тянется до конца строки.
+- Разделитель операторов: `;` (обрабатывается на уровне `processProgram`, токен `semicolon` не генерируется).
+
+---
+
+### Пример ошибки
+
+- `Unknown token ':'` — одиночное `:` без `=` после.
+- `Comment inside expression is not allowed (must end with ';')` — комментарий попал внутрь выражения.
+- `Invalid hex literal '...'` — число не соответствует формату hex.
+- `Identifier '...' cannot start with uppercase letter` — идентификатор начинается с заглавной.
+- `Missing closing parenthesis` / `Missing opening parenthesis` — разбалансированные скобки.
+- `Expression is incomplete` — выражение заканчивается оператором или пустое в ожидаемом месте.
+
+---
+
+### Мини-примеры
+
+```ts
+const text = `
+// sample
+abc := 1a + 2f;
+x := (abc + 3);
+A := 1; // ошибка в идентификаторе
+y := 1a + ;
+`.trim();
+
+const { results } = processProgram(text);
+/*
+results:
+1) "// sample;"                  -> accepted
+2) "abc := 1a + 2f;"             -> accepted
+3) "x := (abc + 3);"             -> accepted
+4) "A := 1;"                     -> cancel, "Identifier 'A' cannot start with uppercase letter"
+5) "y := 1a + "                  -> cancel, "Expression is incomplete"
+*/
+```
+
+---
+
+### Итоги
+- `tokenizeLine` — выделяет токены, `validateExpressionTokens` — проверяет их последовательность.
+- `processStatement` и `processProgram` выставляют конечные статусы строк для отображения в UI.
+
+
