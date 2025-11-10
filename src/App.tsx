@@ -102,121 +102,66 @@ function tokenizeLine(line: string, basePos = 0): Token[] {
   return tokens;
 }
 
-// --- Парсер/интерпретатор выражений (числа — hex) ---
-// Простой рекурсивный парсер с приоритетами: * / выше + -; поддерживает скобки.
-
-class Parser {
-  tokens: Token[];
-  pos: number;
-  vars: Record<string, number>; // таблица переменных (значения в decimal)
-  error?: string;
-
-  constructor(tokens: Token[], vars: Record<string, number>) {
-    this.tokens = tokens;
-    this.pos = 0;
-    this.vars = vars;
+// Валидатор последовательности токенов
+function validateExpressionTokens(tokens: Token[]): { ok: true } | { ok: false; err: string } {
+  // Базовые проверки
+  for (const t of tokens) {
+    if (t.type === "unknown") return { ok: false, err: `Unknown token '${t.value}'` };
+    if (t.type === "comment") return { ok: false, err: "Comment inside expression is not allowed (must end with ';')" };
   }
-
-  peek() {
-    return this.tokens[this.pos];
-  }
-  consume(): Token | undefined {
-    return this.tokens[this.pos++];
-  }
-
-  // entry point
-  parseExpression(): number | null {
-    const val = this.parseAddSub();
-    if (this.error) return null;
-    if (this.pos < this.tokens.length) {
-      // неожиданные токены
-      this.error = `Unexpected token '${this.tokens[this.pos].value}' at position ${this.tokens[this.pos].pos}`;
-      return null;
-    }
-    return val;
-  }
-
-  parseAddSub(): number | null {
-    let left = this.parseMulDiv();
-    if (this.error) return null;
-    while (this.pos < this.tokens.length && this.peek().type === "op" && (this.peek().value === "+" || this.peek().value === "-")) {
-      const op = this.consume()!.value;
-      const right = this.parseMulDiv();
-      if (this.error || right === null || left === null) return null;
-      left = op === "+" ? left + right : left - right;
-    }
-    return left;
-  }
-
-  parseMulDiv(): number | null {
-    let left = this.parseFactor();
-    if (this.error) return null;
-    while (this.pos < this.tokens.length && this.peek().type === "op" && (this.peek().value === "*" || this.peek().value === "/")) {
-      const op = this.consume()!.value;
-      const right = this.parseFactor();
-      if (this.error || right === null || left === null) return null;
-      if (op === "/") {
-        if (right === 0) {
-          this.error = "Division by zero";
-          return null;
+  // Пустое выражение — ошибка
+  if (tokens.length === 0) return { ok: false, err: "Expression is incomplete" };
+ 
+  // Проверка баланса скобок и порядка: ожидаем операнд/скобку или оператор/закрывающую скобку
+  let expectOperand = true;
+  let depth = 0;
+ 
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (expectOperand) {
+      if (t.type === "hex") {
+        if (!/^[0-9][0-9a-f]*$/.test(t.value)) return { ok: false, err: `Invalid hex literal '${t.value}'` };
+        expectOperand = false;
+        continue;
+      }
+      if (t.type === "identifier") {
+        if (/^[A-Z]/.test(t.value)) return { ok: false, err: `Identifier '${t.value}' cannot start with uppercase letter` };
+        expectOperand = false;
+        continue;
+      }
+      if (t.type === "lparen") {
+        depth++;
+        expectOperand = true;
+        continue;
+      }
+      return { ok: false, err: `Unexpected token '${t.value}'` };
+    } else {
+      if (t.type === "op") {
+        if (t.value !== "+" && t.value !== "-" && t.value !== "*" && t.value !== "/") {
+          return { ok: false, err: `Unexpected token '${t.value}'` };
         }
-        left = Math.floor(left / right);
-      } else {
-        left = left * right;
+        expectOperand = true;
+        continue;
       }
+      if (t.type === "rparen") {
+        if (depth === 0) return { ok: false, err: "Missing opening parenthesis" };
+        depth--;
+        expectOperand = false;
+        continue;
+      }
+      return { ok: false, err: `Unexpected token '${t.value}'` };
     }
-    return left;
   }
-
-  parseFactor(): number | null {
-    if (this.pos >= this.tokens.length) {
-      this.error = "Expression is incomplete";
-      return null;
-    }
-    const tok = this.peek();
-    if (tok.type === "hex") {
-      // Проверяем валидность hex-числа: должно содержать только 0-9 и a-f (и начинаться с цифры)
-      if (!/^[0-9][0-9a-f]*$/.test(tok.value)) {
-        this.error = `Invalid hex literal '${tok.value}'`;
-        return null;
-      }
-      this.consume();
-      return parseInt(tok.value, 16);
-    }
-    if (tok.type === "identifier") {
-      // идентификатор не может начинаться с заглавной буквы
-      if (/^[A-Z]/.test(tok.value)) {
-        this.error = `Identifier '${tok.value}' cannot start with uppercase letter`;
-        return null;
-      }
-      this.consume();
-      if (!(tok.value in this.vars)) {
-        this.error = `Undefined variable '${tok.value}'`;
-        return null;
-      }
-      return this.vars[tok.value];
-    }
-    if (tok.type === "lparen") {
-      this.consume();
-      const val = this.parseAddSub();
-      if (this.error) return null;
-      if (this.pos >= this.tokens.length || this.peek().type !== "rparen") {
-        this.error = "Missing closing parenthesis";
-        return null;
-      }
-      this.consume();
-      return val;
-    }
-
-    this.error = `Unexpected token '${tok.value}'`;
-    return null;
-  }
+ 
+  if (depth !== 0) return { ok: false, err: "Missing closing parenthesis" };
+  if (expectOperand) return { ok: false, err: "Expression is incomplete" };
+  return { ok: true };
 }
 
 // --- Высокоуровневая обработка текста: разбить на строки/операторы по ';' и выполнить ---
 function processProgram(text: string) {
   const results: { raw: string; status: "accepted" | "cancel"; message?: string }[] = [];
-  const vars: Record<string, number> = {};
+  // Переменные и вычисления удалены — оставляем только лексический/синтаксический статус строки.
 
   // Разделяем по ';' — в языке ';' является разделителем/терминатором.
   // Мы сохраняем текст между точками с запятой.
@@ -229,7 +174,7 @@ function processProgram(text: string) {
       const statementRaw = current.slice(0, -1).trim(); // без ';'
       if (statementRaw.length > 0) {
         // Обработка одной строки/оператора
-        const res = processStatement(statementRaw, vars);
+        const res = processStatement(statementRaw);
         results.push({ raw: statementRaw + ";", status: res.ok ? "accepted" : "cancel", message: res.ok ? undefined : res.err });
       } else {
         // пустой оператор — игнорируем
@@ -242,15 +187,16 @@ function processProgram(text: string) {
   // Если в конце нет завершающего ';', считаем это ошибкой для последней незавершённой строки
   if (current.trim().length > 0) {
     const statementRaw = current.trim();
-    const res = processStatement(statementRaw, vars);
+    const res = processStatement(statementRaw);
     results.push({ raw: statementRaw + (res.ok ? ";" : ""), status: res.ok ? "accepted" : "cancel", message: res.ok ? undefined : res.err });
   }
 
-  return { results, vars };
+  // Не возвращаем переменные наружу — результаты переменных не сохраняем и не вычисляем для вывода
+  return { results };
 }
 
 // processStatement: анализ токенов одной логической части (без завершающего ';')
-function processStatement(statement: string, vars: Record<string, number>) {
+function processStatement(statement: string) {
   // Если комментарий (начинается с //) — автоматически принимаем
   const trimmed = statement.trim();
   if (trimmed.startsWith("//")) {
@@ -270,65 +216,16 @@ function processStatement(statement: string, vars: Record<string, number>) {
     if (/^[A-Z]/.test(leftRaw)) return { ok: false, err: `Identifier '${leftRaw}' cannot start with uppercase letter` };
     // Парсим правую часть как выражение
     const tokens = tokenizeLine(rightRaw);
-    // (Убрано) идентификаторы не трактуем как hex по виду
-    
-    // Преобразуем токены: отфильтровать комментарии внутри правой части (неожиданно), неизвестные — ошибка
-    for (const t of tokens) {
-      if (t.type === "unknown") return { ok: false, err: `Unknown token '${t.value}' in expression` };
-      if (t.type === "comment") {
-        // комментарий внутри выражения — некорректно (в языке комментарий заканчивается ';')
-        return { ok: false, err: "Comment inside expression is not allowed (must end with ';')" };
-      }
-    }
-    const parser = new Parser(tokens, vars);
-    const val = parser.parseExpression();
-    if (parser.error || val === null) {
-      const msg = parser.error || "Parse error";
-      // Семантические ошибки (не влияют на accepted): неопределенная переменная, деление на ноль
-      if (/Undefined variable|Division by zero/.test(msg)) {
-        return { ok: true, err: msg };
-      }
-      // Остальное считаем синтаксической ошибкой
-      return { ok: false, err: msg };
-    }
-    // если всё успешно — присваиваем значение
-    vars[leftRaw] = val;
+    const valid = validateExpressionTokens(tokens);
+    if (!valid.ok) return { ok: false, err: valid.err };
     return { ok: true };
   }
 
   // Если нет ':=' — это выражение или число или идентификатор или ошибка
   const tokens = tokenizeLine(statement);
-  // (Убрано) идентификаторы не трактуем как hex по виду
-  
   if (tokens.length === 0) return { ok: true }; // пусто
-  // Если это просто hex или identifier (без операций) — проверим корректность
-  if (tokens.length === 1) {
-    const t = tokens[0];
-    if (t.type === "hex") {
-      // проверка корректности hex
-      if (!/^[0-9][0-9a-f]*$/.test(t.value)) return { ok: false, err: `Invalid hex literal '${t.value}'` };
-      return { ok: true };
-    }
-    if (t.type === "identifier") {
-      if (/^[A-Z]/.test(t.value)) return { ok: false, err: `Identifier '${t.value}' cannot start with uppercase letter` };
-      return { ok: true };
-    }
-    return { ok: false, err: `Invalid standalone token '${t.value}'` };
-  }
-
-  // Иначе — пытаемся распарсить как выражение
-  for (const t of tokens) if (t.type === "unknown") return { ok: false, err: `Unknown token '${t.value}'` };
-  const parser = new Parser(tokens, vars);
-  const val = parser.parseExpression();
-  if (parser.error || val === null) {
-      const msg = parser.error || "Parse error";
-      // Семантические ошибки (не влияют на accepted): неопределенная переменная, деление на ноль
-      if (/Undefined variable|Division by zero/.test(msg)) {
-        return { ok: true, err: msg };
-      }
-      // Остальное считаем синтаксической ошибкой
-      return { ok: false, err: msg };
-    }
+  const valid = validateExpressionTokens(tokens);
+  if (!valid.ok) return { ok: false, err: valid.err };
   return { ok: true };
 }
 
@@ -350,11 +247,11 @@ function HighlightedEditor({ text, onChange }: { text: string; onChange: (v: str
 
 export default function App() {
   const [text, setText] = useState<string>(`abc := 1a5 + 2f;\n_var := 0ff * (x - 1b);\n// This is a comment;\nnew := a + b * 2;\nundef := 5 + ;\n`);
-  const [lastResult, setLastResult] = useState<{ results: any[]; vars: Record<string, number> } | null>(null);
+  const [results, setResults] = useState<{ raw: string; status: "accepted" | "cancel"; message?: string }[] | null>(null);
 
   const run = () => {
     const res = processProgram(text);
-    setLastResult(res);
+    setResults(res.results);
   };
 
   return (
@@ -376,26 +273,15 @@ export default function App() {
             <CardTitle>Результат</CardTitle>
           </CardHeader>
           <CardContent>
-            {lastResult ? (
+            {results ? (
               <div>
                 <div className="mb-3">
                   <strong>Строки:</strong>
                   <ul className="list-disc pl-6">
-                    {lastResult.results.map((r, idx) => (
+                    {results.map((r, idx) => (
                       <li key={idx}>
                         <code>{r.raw}</code> — <strong>{r.status}</strong>
                         {r.message ? <span>: {r.message}</span> : null}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-                <div>
-                  <strong>Переменные (в конце выполнения):</strong>
-                  <ul className="list-disc pl-6">
-                    {Object.keys(lastResult.vars).length === 0 && <li> (нет переменных) </li>}
-                    {Object.entries(lastResult.vars).map(([k, v]) => (
-                      <li key={k}>
-                        {k} = {v} (0x{v.toString(16)})
                       </li>
                     ))}
                   </ul>
@@ -407,17 +293,62 @@ export default function App() {
           </CardContent>
         </Card>
       </div>
-
-      {/* Простая легенда стилей подсветки */}
-      <style>{`
-        .tk-comment { color: #6b7280; }
-        .tk-id { color: #0ea5a4; }
-        .tk-hex { color: #f97316; }
-        .tk-op { color: #ef4444; }
-        .tk-assign { color: #7c3aed; }
-        .tk-par { color: #3b82f6; }
-        .tk-err { text-decoration: underline; text-decoration-color: #ef4444; }
-      `}</style>
+      {/* Таблица лексем языка */}
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle>Таблица лексем языка</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left border-b">
+                  <th className="py-2 pr-4">Лексема</th>
+                  <th className="py-2 pr-4">Описание</th>
+                  <th className="py-2">Примеры</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="border-b">
+                  <td className="py-2 pr-4"><code>identifier</code></td>
+                  <td className="py-2 pr-4">Идентификатор: начинается с <code>_</code> или строчной буквы, далее буквы/цифры/_</td>
+                  <td className="py-2"><code>abc</code>, <code>_var1</code></td>
+                </tr>
+                <tr className="border-b">
+                  <td className="py-2 pr-4"><code>hex</code></td>
+                  <td className="py-2 pr-4">Шестнадцатеричное число: только <code>0-9</code>, <code>a-f</code>, начинается с цифры</td>
+                  <td className="py-2"><code>1a5</code>, <code>2f</code>, <code>0ff</code></td>
+                </tr>
+                <tr className="border-b">
+                  <td className="py-2 pr-4"><code>op</code></td>
+                  <td className="py-2 pr-4">Арифметические операторы</td>
+                  <td className="py-2"><code>+</code>, <code>-</code>, <code>*</code>, <code>/</code></td>
+                </tr>
+                <tr className="border-b">
+                  <td className="py-2 pr-4"><code>assign</code></td>
+                  <td className="py-2 pr-4">Оператор присваивания</td>
+                  <td className="py-2"><code>:=</code></td>
+                </tr>
+                <tr className="border-b">
+                  <td className="py-2 pr-4"><code>lparen</code>, <code>rparen</code></td>
+                  <td className="py-2 pr-4">Скобки</td>
+                  <td className="py-2"><code>(</code>, <code>)</code></td>
+                </tr>
+                <tr className="border-b">
+                  <td className="py-2 pr-4"><code>comment</code></td>
+                  <td className="py-2 pr-4">Комментарий до конца строки</td>
+                  <td className="py-2"><code>// ...</code></td>
+                </tr>
+                <tr>
+                  <td className="py-2 pr-4"><code>semicolon</code></td>
+                  <td className="py-2 pr-4">Разделитель операторов</td>
+                  <td className="py-2"><code>;</code></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
