@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge"
 
 // --- Типы токенов ---
 type TokenType =
@@ -160,7 +161,7 @@ function validateExpressionTokens(tokens: Token[]): { ok: true } | { ok: false; 
 
 // --- Высокоуровневая обработка текста: разбить на строки/операторы по ';' и выполнить ---
 function processProgram(text: string) {
-  const results: { raw: string; status: "accepted" | "cancel"; message?: string }[] = [];
+  const results: { raw: string; status: "accepted" | "cancel"; message?: string, tokens?: Token[] }[] = [];
   // Переменные и вычисления удалены — оставляем только лексический/синтаксический статус строки.
 
   // Разделяем по ';' — в языке ';' является разделителем/терминатором.
@@ -175,7 +176,7 @@ function processProgram(text: string) {
       if (statementRaw.length > 0) {
         // Обработка одной строки/оператора
         const res = processStatement(statementRaw);
-        results.push({ raw: statementRaw + ";", status: res.ok ? "accepted" : "cancel", message: res.ok ? undefined : res.err });
+        results.push({ raw: statementRaw + ";", status: res.ok ? "accepted" : "cancel", message: res.ok ? undefined : res.err, tokens: res.tokens });
       } else {
         // пустой оператор — игнорируем
       }
@@ -188,7 +189,7 @@ function processProgram(text: string) {
   if (current.trim().length > 0) {
     const statementRaw = current.trim();
     const res = processStatement(statementRaw);
-    results.push({ raw: statementRaw + (res.ok ? ";" : ""), status: res.ok ? "accepted" : "cancel", message: res.ok ? undefined : res.err });
+    results.push({ raw: statementRaw + (res.ok ? ";" : ""), status: res.ok ? "accepted" : "cancel", message: res.ok ? undefined : res.err, tokens: res.tokens });
   }
 
   // Не возвращаем переменные наружу — результаты переменных не сохраняем и не вычисляем для вывода
@@ -217,16 +218,16 @@ function processStatement(statement: string) {
     // Парсим правую часть как выражение
     const tokens = tokenizeLine(rightRaw);
     const valid = validateExpressionTokens(tokens);
-    if (!valid.ok) return { ok: false, err: valid.err };
-    return { ok: true };
+    if (!valid.ok) return { ok: false, err: valid.err, tokens };
+    return { ok: true, tokens };
   }
 
   // Если нет ':=' — это выражение или число или идентификатор или ошибка
   const tokens = tokenizeLine(statement);
   if (tokens.length === 0) return { ok: true }; // пусто
   const valid = validateExpressionTokens(tokens);
-  if (!valid.ok) return { ok: false, err: valid.err };
-  return { ok: true };
+  if (!valid.ok) return { ok: false, err: valid.err, tokens };
+  return { ok: true , tokens};
 }
 
 // --- Компоненты UI ---
@@ -247,12 +248,37 @@ function HighlightedEditor({ text, onChange }: { text: string; onChange: (v: str
 
 export default function App() {
   const [text, setText] = useState<string>(`abc := 1a5 + 2f;\n_var := 0ff * (x - 1b);\n// This is a comment;\nnew := a + b * 2;\nundef := 5 + ;\n`);
-  const [results, setResults] = useState<{ raw: string; status: "accepted" | "cancel"; message?: string }[] | null>(null);
+  const [results, setResults] = useState<{ raw: string; status: "accepted" | "cancel"; message?: string, tokens?: Token[] }[] | null>(null);
 
   const run = () => {
     const res = processProgram(text);
     setResults(res.results);
   };
+
+  const typeColor = useCallback((type: TokenType) => {
+    switch(type) {
+      case 'identifier': 
+        return '#4b5563';
+      case 'assign':
+        return '#0284c7';
+      case 'hex': 
+        return '#7c3aed';
+      case 'lparen':
+        return '#525252';
+      case 'rparen':
+        return '#525252';
+      case 'op':
+        return '#c026d3';
+      case 'comment': 
+        return '#16a34a';
+      case 'semicolon':
+        return '#475569';
+      case 'unknown':
+        return '#dc2626';
+      default:
+        return '#dc2626';
+    }
+  }, [])
 
   return (
     <div className="p-6 min-h-screen bg-background">
@@ -282,6 +308,9 @@ export default function App() {
                       <li key={idx}>
                         <code>{r.raw}</code> — <strong>{r.status}</strong>
                         {r.message ? <span>: {r.message}</span> : null}
+                        {r.tokens && (<div style={{display: 'flex'}}>
+                          {r.tokens.map(token => <Badge style={{ background: typeColor(token.type)}} >{token.value} : {token.type}</Badge>)}
+                        </div>)}
                       </li>
                     ))}
                   </ul>
